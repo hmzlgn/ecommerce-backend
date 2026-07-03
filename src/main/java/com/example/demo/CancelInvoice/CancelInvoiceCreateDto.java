@@ -5,4 +5,5 @@ import lombok.Data;
 @Data
 public class CancelInvoiceCreateDto {
     private Long invoiceId;
+    private String reason;
 }

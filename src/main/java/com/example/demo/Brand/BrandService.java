@@ -18,7 +18,7 @@ public class BrandService {
     @Transactional
     public BrandResponseDto createBrand(BrandCreateDto request){
 
-        if (brandRepository.existByName(request.getName())){
+        if (brandRepository.existsByName(request.getName())){
             throw new RuntimeException("Bu marka zaten sistemde kayıtlı: " + request.getName());
         }
         Brand brand = new Brand();
