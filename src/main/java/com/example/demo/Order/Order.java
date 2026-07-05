@@ -1,6 +1,7 @@
 package com.example.demo.Order;
 
 import com.example.demo.Invoice.Invoice;
+import com.example.demo.OrderItem.OrderItem;
 import com.example.demo.Payment.Payment;
 import com.example.demo.User.User;
 import com.example.demo.enums.OrderStatus;
@@ -43,7 +44,7 @@ public class Order {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private OrderStatus status = OrderStatus.PENDING; //default
+    private OrderStatus orderStatus = OrderStatus.PENDING; //default
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -68,9 +69,5 @@ public class Order {
 
     @OneToOne(mappedBy="order")
     private Payment payment;
-
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
-    private OrderStatus orderStatus;
 
 }

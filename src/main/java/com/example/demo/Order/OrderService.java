@@ -1,90 +1,234 @@
 package com.example.demo.Order;
 
-import com.example.demo.StockMovement.StockMovementCreateDto;
+import com.example.demo.OrderItem.OrderItem;
+import com.example.demo.OrderItem.OrderItemRequestDto;
+import com.example.demo.OrderItem.OrderItemResponseDto;
 import com.example.demo.Product.Product;
 import com.example.demo.Product.ProductRepository;
-import com.example.demo.StockMovement.StockMovementService;
 import com.example.demo.User.User;
 import com.example.demo.User.UserRepository;
 import com.example.demo.enums.OrderStatus;
 import com.example.demo.enums.PaymentStatus;
-import com.example.demo.enums.StockMovementType;
-import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
+@Transactional
 public class OrderService {
+
     private final OrderRepository orderRepository;
-    private final StockMovementService stockMovementService;
-    private final UserRepository userRepository;
     private final ProductRepository productRepository;
+    private final UserRepository userRepository;
 
-    public Order createOrder(OrderCreateDto request){
-        //1.Kullanıcı veritabanında var mı kontrol et.
-        User user = userRepository.findById(request.getUserId())
-                .orElseThrow(() -> new RuntimeException("Kullanıcı Bulunamadı! ID:" + request.getUserId()));
-        //2.Boş bir Order tepsisi oluştur.
+    public OrderService(OrderRepository orderRepository,
+                        ProductRepository productRepository,
+                        UserRepository userRepository) {
+        this.orderRepository = orderRepository;
+        this.productRepository = productRepository;
+        this.userRepository = userRepository;
+    }
+
+    // --- 1. SİPARİŞ OLUŞTURMA (MÜŞTERİ SEPETİ ONAYLADIĞINDA) ---
+    public OrderResponseDto createOrder(Long userId, OrderCreateDto request) {
+        if (request.getItems() == null || request.getItems().isEmpty()) {
+            throw new IllegalArgumentException("Sipariş en az bir ürün içermelidir!");
+        }
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("Kullanıcı bulunamadı!"));
+
         Order order = new Order();
-
         order.setUser(user);
+        order.setOrderStatus(OrderStatus.PENDING);
+        order.setOrderItems(new ArrayList<>());
         order.setShippingAddress(request.getShippingAddress());
-        order.setStatus(OrderStatus.PENDING);
+        order.setPaymentMethod(request.getPaymentMethod());
         order.setPaymentStatus(PaymentStatus.PENDING);
+        order.setOrderNote(request.getOrderNote());
+        // orderDate set edilmiyor: @CreationTimestamp bunu otomatik dolduruyor
 
-        //3.Geçiçi olarak Order(Sipariş) toplam fiyatını 0 a eşitle.
         BigDecimal totalAmount = BigDecimal.ZERO;
 
-        //4.Eşitlediğin tutarı order'ın totalAmountuna set et.
-        order.setTotalAmount(totalAmount);
+        // Deadlock riskini azaltmak için ürünleri productId'ye göre sıralı işliyoruz
+        List<OrderItemRequestDto> sortedItems = request.getItems().stream()
+                .sorted(Comparator.comparing(OrderItemRequestDto::getProductId))
+                .collect(Collectors.toList());
 
-        //5.OrderItem(Sepetteki ürün satırı) için liste oluştur
-        List<OrderItem> orderItemList=new ArrayList<>();
-
-        //6.Döngü içerisinde hem ürün stok kontrolü hem de request içerisinde gelen ürünleri listeye ekle.
-        for (OrderItemRequestDto items: request.getItems()){
-            Product product =productRepository.findById(items.getProductId())
-                    .orElseThrow(() -> new RuntimeException("Ürün Bulunamadı! ID: " + items.getProductId()));
-            //Stok kontrolü
-            if (items.getQuantity()>product.getStock()){
-                throw new RuntimeException("Ürün adedi, stok adedinden fazla olamaz!" +
-                        "\nStok:" + product.getStock() +
-                        "\nSipariş edilmek istenen ürün adedi:" + items.getQuantity());
+        for (OrderItemRequestDto itemDto : sortedItems) {
+            if (itemDto.getQuantity() == null || itemDto.getQuantity() <= 0) {
+                throw new IllegalArgumentException("Ürün miktarı geçerli değil! Ürün ID: " + itemDto.getProductId());
             }
-            //7.Stokta ve kullanıcıda sorun yoksa ürünün stoğunu düşür.
-            product.setStock(product.getStock()-items.getQuantity());
-            product=productRepository.save(product);
-            //8.StokMovementCreateDto yu oluştur/set et.
-            StockMovementCreateDto stockMovement = new StockMovementCreateDto();
-            stockMovement.setProductId(items.getProductId());
-            stockMovement.setQuantity(items.getQuantity());
-            stockMovement.setMovementType(StockMovementType.SALE);
-            //9.Set ettiklerini StockMovementService ile kaydet.
-            stockMovementService.recordMovement(stockMovement);
 
-            //10.OrderItem türünden bir boş nesne oluştur.
-            //İçerisine Siparişi, Ürünü, ürünün O ANKİ adını, O ANKİ fiyatını ve adedini set et.
-            OrderItem orderItem=new OrderItem();
+            // Pessimistic lock: aynı ürün için eşzamanlı stok düşürmeyi engeller
+            Product product = productRepository.findByIdForUpdate(itemDto.getProductId())
+                    .orElseThrow(() -> new RuntimeException("Ürün bulunamadı! ID: " + itemDto.getProductId()));
+
+            if (product.getStock() < itemDto.getQuantity()) {
+                throw new RuntimeException("Yetersiz stok! Ürün: " + product.getName()
+                        + " | Kalan Stok: " + product.getStock());
+            }
+
+            // Stok Düşme İşlemi
+            product.setStock(product.getStock() - itemDto.getQuantity());
+            productRepository.save(product);
+
+            // OrderItem Oluşturma
+            OrderItem orderItem = new OrderItem();
             orderItem.setOrder(order);
             orderItem.setProduct(product);
+            orderItem.setQuantity(itemDto.getQuantity());
+            orderItem.setUnitPrice(product.getSellPrice()); // O anki satış fiyatını sabitlemek e-ticarette kanundur
             orderItem.setProductName(product.getName());
-            orderItem.setUnitPrice(product.getSellPrice());
-            orderItem.setQuantity(items.getQuantity());
-            //
-            BigDecimal itemTotal = orderItem.getUnitPrice().multiply(BigDecimal.valueOf(orderItem.getQuantity()));
-            totalAmount=totalAmount.add(itemTotal);
-            orderItemList.add(orderItem);
+
+            BigDecimal itemQuantity = BigDecimal.valueOf(itemDto.getQuantity());
+            BigDecimal itemTotalPrice = product.getSellPrice().multiply(itemQuantity);
+
+            order.getOrderItems().add(orderItem);
+            totalAmount = totalAmount.add(itemTotalPrice);
         }
-        // Döngü bitti, fişi koliye zımbala
-        order.setOrderItems(orderItemList);
 
-        // Genel toplamı koliye yaz
         order.setTotalAmount(totalAmount);
+        order = orderRepository.save(order);
 
-        // Koliyi veritabanına kaydet ve işlemi bitir!
-        return order=orderRepository.save(order);
+        return mapToResponse(order);
+    }
+
+    // --- 2. SİPARİŞ DURUM GÜNCELLEMELERİ (DURUM MAKİNESİ) ---
+
+    // Satıcı onayladığında çalışır (PENDING -> PROCESSING)
+    public OrderResponseDto approveOrder(Long orderId) {
+        Order order = getOrderEntity(orderId);
+
+        if (order.getOrderStatus() != OrderStatus.PENDING) {
+            throw new RuntimeException("Sadece 'Bekleyen' (PENDING) siparişler onaylanabilir!");
+        }
+
+        order.setOrderStatus(OrderStatus.PROCESSING);
+        order = orderRepository.save(order);
+        return mapToResponse(order);
+    }
+
+    // Kargoya verildiğinde çalışır (PROCESSING -> SHIPPED)
+    public OrderResponseDto shipOrder(Long orderId) {
+        Order order = getOrderEntity(orderId);
+
+        if (order.getOrderStatus() != OrderStatus.PROCESSING) {
+            throw new RuntimeException("Sipariş henüz satıcı tarafından onaylanmamış veya zaten kargolanmış!");
+        }
+
+        order.setOrderStatus(OrderStatus.SHIPPED);
+        order = orderRepository.save(order);
+        return mapToResponse(order);
+    }
+
+    // Müşteriye teslim edildiğinde çalışır (SHIPPED -> DELIVERED)
+    public OrderResponseDto deliverOrder(Long orderId) {
+        Order order = getOrderEntity(orderId);
+
+        if (order.getOrderStatus() != OrderStatus.SHIPPED) {
+            throw new RuntimeException("Sipariş henüz kargolanmamış!");
+        }
+
+        order.setOrderStatus(OrderStatus.DELIVERED);
+        order = orderRepository.save(order);
+        return mapToResponse(order);
+    }
+
+    // --- 3. SİPARİŞ İPTALİ VE STOK İADESİ ---
+    public OrderResponseDto cancelOrder(Long orderId) {
+        Order order = getOrderEntity(orderId);
+
+        if (order.getOrderStatus() == OrderStatus.SHIPPED || order.getOrderStatus() == OrderStatus.DELIVERED) {
+            throw new RuntimeException("Kargoya verilmiş siparişler doğrudan iptal edilemez! İade (Refund) faturası kesilmelidir.");
+        }
+        if (order.getOrderStatus() == OrderStatus.CANCELLED) {
+            throw new RuntimeException("Bu sipariş zaten iptal edilmiş!");
+        }
+
+        // İptal edilen ürünlerin stoğunu depoya geri ekleme operasyonu
+        // Burada da deadlock'tan kaçınmak için ürünleri sıralı işliyoruz
+        List<OrderItem> sortedOrderItems = order.getOrderItems().stream()
+                .sorted(Comparator.comparing(oi -> oi.getProduct().getId()))
+                .collect(Collectors.toList());
+
+        for (OrderItem item : sortedOrderItems) {
+            Product product = productRepository.findByIdForUpdate(item.getProduct().getId())
+                    .orElseThrow(() -> new RuntimeException("Ürün bulunamadı! ID: " + item.getProduct().getId()));
+            product.setStock(product.getStock() + item.getQuantity());
+            productRepository.save(product);
+        }
+
+        order.setOrderStatus(OrderStatus.CANCELLED);
+        order = orderRepository.save(order);
+        return mapToResponse(order);
+    }
+
+    // --- 4. LİSTELEME VE GETİRME İŞLEMLERİ (SAYFALAMA İLE) ---
+
+    @Transactional(readOnly = true)
+    public OrderResponseDto getOrderById(Long orderId) {
+        return mapToResponse(getOrderEntity(orderId));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<OrderResponseDto> getOrdersByUser(Long userId, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by("orderDate").descending());
+        Page<Order> orderPage = orderRepository.findByUserId(userId, pageable);
+        return orderPage.map(this::mapToResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<OrderResponseDto> getAllOrders(int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by("orderDate").descending());
+        Page<Order> orderPage = orderRepository.findAll(pageable);
+        return orderPage.map(this::mapToResponse);
+    }
+
+    // --- 5. YARDIMCI METOTLAR ---
+
+    // Kod tekrarını önlemek için merkezi Entity getirme metodu
+    private Order getOrderEntity(Long orderId) {
+        return orderRepository.findById(orderId)
+                .orElseThrow(() -> new RuntimeException("Sipariş bulunamadı! ID: " + orderId));
+    }
+
+    // Order -> OrderResponseDto paketleme görevlisi
+    private OrderResponseDto mapToResponse(Order order) {
+        OrderResponseDto response = new OrderResponseDto();
+        response.setId(order.getId());
+        response.setUserId(order.getUser().getId());
+        response.setOrderDate(order.getOrderDate());
+        response.setStatus(order.getOrderStatus());
+        response.setTotalAmount(order.getTotalAmount());
+
+        if (order.getOrderItems() != null) {
+            List<OrderItemResponseDto> itemDtos = order.getOrderItems().stream()
+                    .map(this::mapItemToResponse)
+                    .collect(Collectors.toList());
+            response.setItems(itemDtos);
+        }
+
+        return response;
+    }
+
+    // OrderItem -> OrderItemResponseDto paketleme görevlisi
+    private OrderItemResponseDto mapItemToResponse(OrderItem item) {
+        OrderItemResponseDto dto = new OrderItemResponseDto();
+        dto.setId(item.getId());
+        dto.setProductId(item.getProduct().getId());
+        dto.setProductName(item.getProduct().getName());
+        dto.setQuantity(item.getQuantity());
+        dto.setUnitPrice(item.getUnitPrice());
+        return dto;
     }
 }

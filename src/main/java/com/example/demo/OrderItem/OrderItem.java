@@ -1,4 +1,5 @@
-package com.example.demo.Order;
+package com.example.demo.OrderItem;
+import com.example.demo.Order.Order;
 import com.example.demo.Product.Product;
 import jakarta.persistence.*;
 import lombok.Getter;

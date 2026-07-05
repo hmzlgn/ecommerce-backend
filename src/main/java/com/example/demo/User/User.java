@@ -28,14 +28,17 @@ public class User {
     @Enumerated(EnumType.STRING)
     private Role role;
 
+    private String resetPasswordToken;
+    private String emailVerificationToken;
+
     private boolean emailVerified;
     private boolean phoneVerified;
 
     @Column(nullable = false)
-    private String firstName; // ad
+    private String firstName;
 
     @Column(nullable = false)
-    private String lastName; // soyad
+    private String lastName;
 
     @Column(nullable = false, unique = true)
     private String email;

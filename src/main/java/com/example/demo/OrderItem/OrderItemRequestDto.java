@@ -1,4 +1,4 @@
-package com.example.demo.Order;
+package com.example.demo.OrderItem;
 
 import lombok.Data;
 
