@@ -2,6 +2,7 @@ package com.example.demo.CancelInvoice;
 
 import com.example.demo.Invoice.Invoice;
 import com.example.demo.User.User;
+import com.example.demo.enums.CancelInvoiceStatus;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -27,4 +28,6 @@ public class CancelInvoice {
 
     @ManyToOne
     private User cancelledBy;
+    @Enumerated(EnumType.STRING)
+    private CancelInvoiceStatus status;
 }

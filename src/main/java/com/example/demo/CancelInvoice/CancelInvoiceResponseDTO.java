@@ -1,5 +1,6 @@
 package com.example.demo.CancelInvoice;
 
+import com.example.demo.enums.CancelInvoiceStatus;
 import com.example.demo.enums.InvoiceType;
 import lombok.Data;
 
@@ -8,4 +9,5 @@ public class CancelInvoiceResponseDTO {
     private Long originalInvoiceId;
     private String cancelReason;
     private InvoiceType invoiceType;
+    private CancelInvoiceStatus status;
 }
