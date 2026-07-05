@@ -143,7 +143,7 @@ public class ProductService {
 
     // id ile ürün bulma (hem admin hem kullanıcı detay sayfası için kullanılabilir)
     @Transactional(readOnly = true)
-    public ProductResponseDto getProduct(Long id) {
+    public ProductResponseDto getProductById(Long id) {
         Product product = productRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Ürün Bulunamadı! ID: " + id));
         return mapToResponse(product);
